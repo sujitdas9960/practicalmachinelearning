@@ -1,0 +1,159 @@
+---
+title: "Prediction Assignment"
+author: "Sujit Das"
+date: "May 29, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE,
+                      cache = TRUE)
+```
+
+##Executive Summary
+The goal of this project is to use data from accelerometers on the belt,
+forearm, arm and dumbell of 6 participants, and predict the manner in which
+they did the exercise.
+
+Multiple prediction models were used and the model that was selected for the
+final prediction model had highest accuracy.
+  
+##Data Partioning and Exploration
+For training and prediction, the data set was split into training (70% of data)
+and testing data set (remaining 30%).
+  
+```{r dataPartition}
+fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(fileURL, destfile = "./pml-training.csv")
+dateDownloaded <- date()
+
+trainData <- read.csv("./pml-training.csv", header = TRUE, na.strings =
+                              c("", "#DIV/0!", "NA"), row.names = NULL)
+trainData$classe <- as.factor(trainData$classe)
+
+library(caret)
+set.seed(1235)
+inTrain <- createDataPartition(trainData$classe, p = 0.7, list = FALSE)
+trainSet <- trainData[inTrain, ]
+testSet <- trainData[-inTrain, ]
+```
+  
+The data was downloaded on `r format(dateDownloaded)`.
+After data partioning, each data set had following records:
+  
+* Number of records from the training data set = `r nrow(trainSet)`
+* Number of records from the testing data set = `r nrow(testSet)`
+
+The downloaded data was first manually inspected. It had several columns with
+NA values. These columns were first identified and then removed from the list of
+potential predictors for the classe outcome variable.
+  
+```{r dataExploration}
+colsOrig <- ncol(trainSet)
+nzv <- nearZeroVar(trainSet)
+trainSet <- trainSet[, -nzv]
+colsNZV <- ncol(trainSet)
+
+naData <- apply(trainSet, 2, function(col) sum(is.na(col))/length(col))
+
+## Consider only those columns that have number of NAs less than 50%
+subNAData <- naData[naData < 0.5]
+
+## Remove first column as it just sequnce number
+subNAData <- subNAData[c(-1)]
+trainSet <- trainSet[, names(subNAData)]
+```
+  
+The number of predictors to be used in training model has been reduced as below:
+  
+* Number of predictors originally available in the data set = `r colsOrig`
+* Number of predictors after applying near zero variance function = `r colsNZV`
+* Number of predictors after removing columns with NAs >= 50% & first column =
+`r ncol(trainSet)`
+  
+##Building Prediction Models
+Below models were trained on the training data set
+  
+* Classification Tree
+* Random Forest
+* Boosted Predictor
+* Bagging Predictor
+* Combining Predictor (Boosted, Bagging and Combining)
+
+We used the basic version of cross-validation - k-fold cross-validation.
+Here, the samples are randomly partitioned into k sets (called folds) of roughly
+equal size. A model is fit using all the samples except the first subset. Then,
+the prediction error of the fitted model is calculated using the first held-out
+samples. The same operation is repeated for each fold and the model's
+performance is calculated by averaging the errors across the different test
+sets. k was fixed at 3.
+  
+```{r buildModel, results = "hide"}
+train_control <- trainControl(method="cv", number=3)
+vecModelName <- c("Classification.Tree", "Random.Forest","Boosted.Predictor", 
+                  "Bagging.Predictor", "Combining.Predictor")
+vecModelMethod <- c("rpart", "rf", "gbm", "treebag", "gam")
+vecAccuracy <- vector(mode = "numeric", length = 5)
+listModel <- list()
+listResult <- list()
+
+## Predict using for all 5 prediction models as well as determine its
+## accuracy
+for (indx in 1:4)       {
+        listModel[[indx]] <- train(classe ~ ., data = trainSet,
+                                   trControl=train_control,
+                                   method=vecModelMethod[indx])        
+        listResult[[indx]] <- predict(listModel[[indx]], testSet)
+        vecAccuracy[indx] <- confusionMatrix(testSet$classe,
+                                listResult[[indx]])$overall['Accuracy'][[1]]
+}
+
+## Prediction model that combines Random Forest, Boosted Predictor and Bagging
+## predictor
+predDF <- data.frame(listResult[[2]], listResult[[3]], listResult[[4]],
+                     classe = testSet$classe)
+listModel[[5]] <- train(classe ~ ., data = predDF, trControl=train_control,
+                        method="gam")
+listResult[[5]] <- predict(listModel[[5]], predDF)
+vecAccuracy[5] <- confusionMatrix(testSet$classe,
+                                  listResult[[5]])$overall['Accuracy'][[1]]
+```
+  
+##Select Prediction Model
+Since 'classe' is a categorical variable, the prediction model with the highest
+accuracy was selected as the final model. Below shows prediction model plots
+along with the accuracy table.
+  
+```{r selectModel}
+g <- list()
+## Plot prediction of each model for test data set
+for (indx in 1:5)       {
+        predRight <- listResult[[indx]] == testSet$classe
+        plotDF <- data.frame(x = testSet$classe, y = listResult[[indx]],
+                             Prediction = predRight)
+        g[[indx]] <- ggplot(data = plotDF, aes(y = y, x = x,
+                                               colour = Prediction))
+        g[[indx]] <- g[[indx]] + geom_point(size = 7, alpha = 0.5)
+        g[[indx]] <- g[[indx]] + xlab("Test Data Set classe") +
+                                 ylab("Predicted classe")
+        g[[indx]] <- g[[indx]] + ggtitle(paste(vecModelName[indx],
+                                               " Prediction"))
+        g[[indx]] <- g[[indx]] + theme(plot.title = element_text(hjust = 0.5))
+}
+
+library(gridExtra)
+grid.arrange(g[[1]], g[[2]], ncol = 2)
+grid.arrange(g[[3]], g[[4]], ncol = 2)
+grid.arrange(g[[5]], ncol = 1)
+
+## Print the prediction accuracy for each of the 5 models
+library(knitr)
+dfAccuracy <- data.frame("Accuracy" = vecAccuracy, row.names = vecModelName)
+kable(round(dfAccuracy, 4), align = "c", caption = "Predictor Accuracy")
+```
+  
+Based on the prediction accuracy, the final selected prediction model was
+**Random Forest since it had the highest accuracy of 0.9995**
+  
